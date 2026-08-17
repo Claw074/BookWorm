@@ -1294,5 +1294,3458 @@ h2{font-size:25px}
 
 })();
 </script>
+  <script>
+(() => {
+  "use strict";
+
+  /* =========================================================
+     BOOKWORM — SUPABASE EDITION
+     ========================================================= */
+
+  const $ = (selector, root = document) => root.querySelector(selector);
+
+  const uid = () =>
+    crypto.randomUUID
+      ? crypto.randomUUID()
+      : "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
+
+  function escapeHtml(value = "") {
+    return String(value).replace(/[&<>"']/g, char => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    }[char]));
+  }
+
+  function debounce(fn, delay = 250) {
+    let timer;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), delay);
+    };
+  }
+
+  function coverColor() {
+    const colors = [
+      "#dfeee2",
+      "#fff0d9",
+      "#efe8ff",
+      "#f7dfdf",
+      "#e5eef7",
+      "#f2e8cf"
+    ];
+
+    return colors[Math.floor(Math.random() * colors.length)];
+  }
+
+  function formatNumber(number) {
+    return Number(number || 0).toLocaleString();
+  }
+
+  /* =========================================================
+     SUPABASE
+     ========================================================= */
+
+  const SUPABASE_URL =
+    "https://nesjmrskrsjbvcyotnvx.supabase.co";
+
+  const SUPABASE_PUBLISHABLE_KEY =
+    "sb_publishable_ABYhfDzryMoa0kuDPfZcJw_WbIbYj8E";
+
+  const supabase = window.supabase.createClient(
+    SUPABASE_URL,
+    SUPABASE_PUBLISHABLE_KEY,
+    {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
+      }
+    }
+  );
+
+  let supabaseUser = null;
+  let profileCache = null;
+
+  /*
+   * Stories are now loaded from Supabase.
+   * Nothing important is stored in localStorage anymore.
+   */
+  let stories = [];
+
+  /* =========================================================
+     AUTH DOM
+     ========================================================= */
+
+  const authScreen = $("#auth-screen");
+  const site = $("#site");
+  const authForm = $("#auth-form");
+
+  const tabLogin = $("#tab-login");
+  const tabSignup = $("#tab-signup");
+
+  const usernameField = $("#username-field");
+  const bioField = $("#bio-field");
+
+  const authUsername = $("#auth-username");
+  const authEmail = $("#auth-email");
+  const authPassword = $("#auth-password");
+  const authBio = $("#auth-bio");
+
+  const authSubmit = $("#auth-submit");
+
+  let authMode = "login";
+
+  /* =========================================================
+     AUTH MESSAGE
+     ========================================================= */
+
+  function setAuthMessage(message, isError = false) {
+    const box = $("#auth-message");
+
+    if (!box) return;
+
+    box.textContent = message;
+    box.style.color = isError ? "#9b3b3b" : "";
+  }
+
+  /* =========================================================
+     PROFILE
+     ========================================================= */
+
+  async function buildProfile(user) {
+    if (!user) return null;
+
+    /*
+     * First try the profiles table.
+     */
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Profile fetch error:", error);
+    }
+
+    /*
+     * If the trigger hasn't created the profile yet,
+     * create it here.
+     */
+    if (!profile) {
+      const metadata = user.user_metadata || {};
+
+      const newProfile = {
+        id: user.id,
+        username:
+          metadata.username ||
+          (user.email || "reader").split("@")[0],
+        bio: metadata.bio || "",
+        avatar_color: metadata.avatarColor || "#f4cf6b"
+      };
+
+      const { data: createdProfile, error: createError } =
+        await supabase
+          .from("profiles")
+          .insert(newProfile)
+          .select()
+          .single();
+
+      if (createError) {
+        console.error("Profile creation error:", createError);
+
+        profileCache = {
+          id: user.id,
+          email: user.email || "",
+          username: newProfile.username,
+          bio: newProfile.bio,
+          avatarColor: newProfile.avatar_color
+        };
+
+        return profileCache;
+      }
+
+      profileCache = {
+        id: createdProfile.id,
+        email: user.email || "",
+        username: createdProfile.username,
+        bio: createdProfile.bio || "",
+        avatarColor:
+          createdProfile.avatar_color || "#f4cf6b"
+      };
+
+      return profileCache;
+    }
+
+    profileCache = {
+      id: profile.id,
+      email: user.email || "",
+      username:
+        profile.username ||
+        (user.email || "reader").split("@")[0],
+      bio: profile.bio || "",
+      avatarColor:
+        profile.avatar_color || "#f4cf6b"
+    };
+
+    return profileCache;
+  }
+
+  function currentUser() {
+    return profileCache;
+  }
+
+  /* =========================================================
+     AUTH MODE
+     ========================================================= */
+
+  function setAuthMode(mode) {
+    authMode = mode;
+
+    const signup = mode === "signup";
+
+    tabLogin.classList.toggle("active", !signup);
+    tabSignup.classList.toggle("active", signup);
+
+    usernameField.classList.toggle("hidden", !signup);
+    bioField.classList.toggle("hidden", !signup);
+
+    authUsername.required = signup;
+    authBio.required = false;
+
+    authSubmit.textContent = signup
+      ? "Create my BookWorm account"
+      : "Log in";
+
+    setAuthMessage(
+      signup
+        ? "Create your account. Your login will be saved securely online."
+        : "Log in to your BookWorm account from any device."
+    );
+  }
+
+  tabLogin.onclick = () => setAuthMode("login");
+  tabSignup.onclick = () => setAuthMode("signup");
+
+  /* =========================================================
+     REGISTER / LOGIN
+     ========================================================= */
+
+  authForm.onsubmit = async event => {
+    event.preventDefault();
+
+    authSubmit.disabled = true;
+
+    try {
+      const email = authEmail.value.trim().toLowerCase();
+      const password = authPassword.value;
+
+      if (!email) {
+        throw new Error("Please enter your email address.");
+      }
+
+      if (password.length < 6) {
+        throw new Error(
+          "Your password needs at least 6 characters."
+        );
+      }
+
+      /* ---------------- SIGN UP ---------------- */
+
+      if (authMode === "signup") {
+        const username = authUsername.value.trim();
+
+        if (username.length < 2) {
+          throw new Error(
+            "Your username needs at least 2 characters."
+          );
+        }
+
+        /*
+         * Check username availability.
+         */
+        const { data: existingUsername, error: usernameError } =
+          await supabase
+            .from("profiles")
+            .select("id")
+            .eq("username", username)
+            .maybeSingle();
+
+        if (usernameError) {
+          console.warn(
+            "Username check:",
+            usernameError
+          );
+        }
+
+        if (existingUsername) {
+          throw new Error(
+            "That username is already taken."
+          );
+        }
+
+        const { data, error } =
+          await supabase.auth.signUp({
+            email,
+            password,
+            options: {
+              data: {
+                username,
+                bio: authBio.value.trim(),
+                avatarColor: "#f4cf6b"
+              }
+            }
+          });
+
+        if (error) throw error;
+
+        if (data.session && data.user) {
+          supabaseUser = data.user;
+
+          await buildProfile(data.user);
+
+          enterSite();
+        } else {
+          setAuthMessage(
+            "Account created! Check your email and click the confirmation link before logging in."
+          );
+
+          authForm.reset();
+          setAuthMode("login");
+        }
+
+        return;
+      }
+
+      /* ---------------- LOGIN ---------------- */
+
+      const { data, error } =
+        await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+
+      if (error) throw error;
+
+      supabaseUser = data.user;
+
+      await buildProfile(data.user);
+
+      enterSite();
+
+    } catch (error) {
+      console.error(error);
+
+      setAuthMessage(
+        error.message ||
+          "Something went wrong. Please try again.",
+        true
+      );
+    } finally {
+      authSubmit.disabled = false;
+    }
+  };
+
+  /* =========================================================
+     LOGOUT
+     ========================================================= */
+
+  async function logout() {
+    await supabase.auth.signOut();
+
+    supabaseUser = null;
+    profileCache = null;
+    stories = [];
+
+    site.style.display = "none";
+    authScreen.style.display = "flex";
+
+    authForm.reset();
+
+    setAuthMode("login");
+  }
+
+  /* =========================================================
+     ENTER SITE
+     ========================================================= */
+
+  async function enterSite() {
+    const user = currentUser();
+
+    if (!user) {
+      site.style.display = "none";
+      authScreen.style.display = "flex";
+      return;
+    }
+
+    authScreen.style.display = "none";
+    site.style.display = "block";
+
+    updateHeader();
+
+    await loadStories();
+
+    renderHome();
+  }
+
+  /* =========================================================
+     HEADER
+     ========================================================= */
+
+  function updateHeader() {
+    const user = currentUser();
+
+    if (!user) return;
+
+    $("#header-username").textContent =
+      user.username;
+
+    $("#header-avatar").textContent =
+      (user.username[0] || "?").toUpperCase();
+
+    $("#header-avatar").style.background =
+      user.avatarColor || "#f4cf6b";
+  }
+
+  /* =========================================================
+     LOAD STORIES
+     ========================================================= */
+
+  async function loadStories() {
+    const { data, error } = await supabase
+      .from("stories")
+      .select("*")
+      .order("created_at", {
+        ascending: false
+      });
+
+    if (error) {
+      console.error("Stories fetch error:", error);
+
+      stories = [];
+
+      return;
+    }
+
+    if (!data) {
+      stories = [];
+      return;
+    }
+
+    /*
+     * Fetch author profiles separately.
+     * This avoids depending on the exact generated
+     * foreign-key relation name in Supabase.
+     */
+
+    const authorIds = [
+      ...new Set(
+        data
+          .map(story => story.author_id)
+          .filter(Boolean)
+      )
+    ];
+
+    let profiles = [];
+
+    if (authorIds.length) {
+      const { data: profileData, error: profileError } =
+        await supabase
+          .from("profiles")
+          .select("id, username")
+          .in("id", authorIds);
+
+      if (profileError) {
+        console.error(
+          "Author profiles error:",
+          profileError
+        );
+      } else {
+        profiles = profileData || [];
+      }
+    }
+
+    const profileMap = {};
+
+    profiles.forEach(profile => {
+      profileMap[profile.id] = profile;
+    });
+
+    stories = data.map(story => ({
+      id: story.id,
+
+      title: story.title,
+
+      author:
+        profileMap[story.author_id]?.username ||
+        "Unknown author",
+
+      authorId: story.author_id,
+
+      fandom: story.fandom || "Original",
+
+      excerpt: story.excerpt || "",
+
+      coverColor:
+        story.cover_color || "#dfeee2",
+
+      tags: Array.isArray(story.tags)
+        ? story.tags
+        : [],
+
+      rating:
+        story.rating || "General",
+
+      status:
+        story.status || "In Progress",
+
+      stats: {
+        reads: story.reads || 0,
+        likes: story.likes_count || 0,
+        bookmarks:
+          story.bookmarks_count || 0
+      },
+
+      createdAt:
+        story.created_at
+          ? new Date(story.created_at).getTime()
+          : Date.now(),
+
+      updatedAt:
+        story.updated_at
+          ? new Date(story.updated_at).getTime()
+          : Date.now(),
+
+      chapters: []
+    }));
+  }
+
+  /* =========================================================
+     LOAD CHAPTERS
+     ========================================================= */
+
+  async function loadChapters(storyId) {
+    const { data, error } = await supabase
+      .from("chapters")
+      .select("*")
+      .eq("story_id", storyId)
+      .order("chapter_number", {
+        ascending: true
+      });
+
+    if (error) {
+      console.error(
+        "Chapters fetch error:",
+        error
+      );
+
+      return [];
+    }
+
+    return (data || []).map(chapter => ({
+      id: chapter.id,
+      storyId: chapter.story_id,
+      chapterNumber: chapter.chapter_number,
+      title:
+        chapter.title ||
+        `Chapter ${chapter.chapter_number}`,
+      body: chapter.body || "",
+      createdAt: chapter.created_at,
+      updatedAt: chapter.updated_at
+    }));
+  }
+
+  /* =========================================================
+     NAVIGATION
+     ========================================================= */
+
+  $("#nav-home").onclick = () => renderHome();
+  $("#nav-explore").onclick = () => renderExplore();
+  $("#nav-search").onclick = () =>
+    renderExplore(true);
+  $("#nav-library").onclick = () =>
+    renderLibrary();
+  $("#nav-write").onclick = () =>
+    renderWrite();
+  $("#nav-profile").onclick = () =>
+    renderProfile();
+
+  /* =========================================================
+     STORY CARD
+     ========================================================= */
+
+  function card(story) {
+    const el = document.createElement("article");
+
+    el.className = "story-card";
+
+    const tags = (story.tags || [])
+      .slice(0, 4)
+      .map(tag =>
+        `<button
+          class="tag"
+          data-tag="${escapeHtml(tag)}"
+        >${escapeHtml(tag)}</button>`
+      )
+      .join("");
+
+    el.innerHTML = `
+      <div
+        class="cover"
+        style="
+          background:
+          linear-gradient(
+            135deg,
+            ${escapeHtml(story.coverColor)},
+            #fff
+          )
+        "
+      >
+        ${escapeHtml(
+          story.title
+            .split(" ")
+            .slice(0, 3)
+            .join(" ")
+        )}
+      </div>
+
+      <div style="min-width:0;flex:1">
+
+        <div class="story-title">
+          ${escapeHtml(story.title)}
+        </div>
+
+        <div class="byline">
+          ${escapeHtml(story.author)}
+          ·
+          ${escapeHtml(story.fandom)}
+        </div>
+
+        <div class="excerpt">
+          ${escapeHtml(story.excerpt)}
+        </div>
+
+        <div class="tags">
+          ${tags}
+        </div>
+
+        <div class="stats">
+          ♥ ${formatNumber(story.stats.likes)}
+          · ★ ${formatNumber(story.stats.bookmarks)}
+          · 👁 ${formatNumber(story.stats.reads)}
+        </div>
+
+      </div>
+    `;
+
+    el.onclick = () =>
+      renderStory(story.id);
+
+    el.querySelectorAll(".tag")
+      .forEach(button => {
+
+        button.onclick = event => {
+          event.stopPropagation();
+
+          renderExplore(
+            false,
+            button.dataset.tag
+          );
+        };
+
+      });
+
+    return el;
+  }
+
+  function renderCards(container, list) {
+    container.innerHTML = "";
+
+    if (!list.length) {
+      container.innerHTML = `
+        <div class="empty">
+          No stories found.
+        </div>
+      `;
+
+      return;
+    }
+
+    list.forEach(story =>
+      container.appendChild(card(story))
+    );
+  }
+
+  /* =========================================================
+     HOME
+     ========================================================= */
+
+  function renderHome() {
+    const user = currentUser();
+
+    if (!user) return;
+
+    $("#app").innerHTML = `
+      <section class="hero">
+
+        <div>
+
+          <div class="brand-tag">
+            WELCOME BACK,
+            ${escapeHtml(
+              user.username.toUpperCase()
+            )}
+          </div>
+
+          <h1>
+            Because writing and designing is beautiful.
+          </h1>
+
+          <p>
+            BOOKWORM is a cozy place to write,
+            publish, design covers and discover
+            stories without losing the visual magic
+            of reading.
+          </p>
+
+          <div class="hero-actions">
+
+            <button
+              class="btn btn-primary"
+              id="home-explore"
+            >
+              Explore stories
+            </button>
+
+            <button
+              class="btn btn-yellow"
+              id="home-write"
+            >
+              Start writing
+            </button>
+
+          </div>
+
+        </div>
+
+        <aside class="showcase">
+
+          <strong>BOOKWORM</strong>
+
+          <p class="muted">
+            Stories deserve beautiful spaces.
+          </p>
+
+          <div style="font-size:44px">
+            🪱 ✦ 📖
+          </div>
+
+        </aside>
+
+      </section>
+
+      <section class="section">
+
+        <h2>Trending</h2>
+
+        <div
+          class="grid"
+          id="home-trending"
+        ></div>
+
+      </section>
+
+      <section class="section">
+
+        <h2>Recently added</h2>
+
+        <div
+          class="grid"
+          id="home-recent"
+        ></div>
+
+      </section>
+
+      <section class="section">
+
+        <h2>Completed</h2>
+
+        <div
+          class="grid"
+          id="home-complete"
+        ></div>
+
+      </section>
+    `;
+
+    $("#home-explore").onclick =
+      () => renderExplore();
+
+    $("#home-write").onclick =
+      () => renderWrite();
+
+    const trending =
+      [...stories]
+        .sort(
+          (a, b) =>
+            (b.stats.reads || 0) -
+            (a.stats.reads || 0)
+        )
+        .slice(0, 4);
+
+    const recent =
+      [...stories]
+        .sort(
+          (a, b) =>
+            b.createdAt -
+            a.createdAt
+        )
+        .slice(0, 4);
+
+    const complete =
+      stories.filter(
+        story =>
+          story.status === "Complete"
+      );
+
+    renderCards(
+      $("#home-trending"),
+      trending
+    );
+
+    renderCards(
+      $("#home-recent"),
+      recent
+    );
+
+    renderCards(
+      $("#home-complete"),
+      complete
+    );
+  }
+
+  /* =========================================================
+     EXPLORE / SEARCH
+     ========================================================= */
+
+  function renderExplore(
+    searchFocus = false,
+    initialTag = ""
+  ) {
+    $("#app").innerHTML = `
+      <section>
+
+        <h2>Explore</h2>
+
+        <div class="search-row">
+
+          <input
+            id="search-input"
+            placeholder="
+              Search title, author, fandom or tag...
+            "
+            value="${escapeHtml(initialTag)}"
+          >
+
+          <button
+            class="btn btn-primary"
+            id="search-button"
+          >
+            Search
+          </button>
+
+          <button
+            class="btn"
+            id="clear-search"
+          >
+            Clear
+          </button>
+
+        </div>
+
+        <div class="explore-layout">
+
+          <aside class="panel">
+
+            <strong>Filters</strong>
+
+            <div class="filter-group">
+
+              <strong>Rating</strong>
+
+              <div
+                class="filter-buttons"
+                id="rating-filters"
+              ></div>
+
+            </div>
+
+            <div class="filter-group">
+
+              <strong>Status</strong>
+
+              <div
+                class="filter-buttons"
+                id="status-filters"
+              ></div>
+
+            </div>
+
+            <div class="filter-group">
+
+              <strong>Popular tags</strong>
+
+              <div
+                class="filter-buttons"
+                id="tag-filters"
+              ></div>
+
+            </div>
+
+          </aside>
+
+          <div>
+
+            <div
+              class="muted"
+              id="result-count"
+            ></div>
+
+            <div
+              class="grid"
+              id="results"
+              style="margin-top:8px"
+            ></div>
+
+          </div>
+
+        </div>
+
+      </section>
+    `;
+
+    const input =
+      $("#search-input");
+
+    const ratings = [
+      "General",
+      "Teen And Up Audiences",
+      "Mature",
+      "Explicit"
+    ];
+
+    const statuses = [
+      "Complete",
+      "In Progress"
+    ];
+
+    const selected = {
+      rating: "",
+      status: "",
+      tag: ""
+    };
+
+    function addFilter(
+      container,
+      values,
+      key
+    ) {
+      values.forEach(value => {
+
+        const button =
+          document.createElement("button");
+
+        button.className =
+          "filter-pill";
+
+        button.textContent =
+          value;
+
+        button.onclick = () => {
+
+          selected[key] =
+            selected[key] === value
+              ? ""
+              : value;
+
+          container
+            .querySelectorAll(
+              ".filter-pill"
+            )
+            .forEach(
+              element =>
+                element.classList.remove(
+                  "active"
+                )
+            );
+
+          if (selected[key]) {
+            button.classList.add(
+              "active"
+            );
+          }
+
+          doSearch();
+        };
+
+        container.appendChild(
+          button
+        );
+      });
+    }
+
+    addFilter(
+      $("#rating-filters"),
+      ratings,
+      "rating"
+    );
+
+    addFilter(
+      $("#status-filters"),
+      statuses,
+      "status"
+    );
+
+    const frequency = {};
+
+    stories.forEach(story => {
+
+      (story.tags || []).forEach(tag => {
+
+        frequency[tag] =
+          (frequency[tag] || 0) + 1;
+
+      });
+
+    });
+
+    const popular =
+      Object.entries(frequency)
+        .sort(
+          (a, b) =>
+            b[1] - a[1]
+        )
+        .slice(0, 15)
+        .map(entry => entry[0]);
+
+    addFilter(
+      $("#tag-filters"),
+      popular,
+      "tag"
+    );
+
+    function doSearch() {
+
+      const query =
+        input.value
+          .trim()
+          .toLowerCase();
+
+      const results =
+        stories.filter(story => {
+
+          if (
+            selected.rating &&
+            story.rating !==
+              selected.rating
+          ) {
+            return false;
+          }
+
+          if (
+            selected.status &&
+            story.status !==
+              selected.status
+          ) {
+            return false;
+          }
+
+          if (
+            selected.tag &&
+            !(story.tags || [])
+              .includes(selected.tag)
+          ) {
+            return false;
+          }
+
+          if (!query) {
+            return true;
+          }
+
+          const fields = [
+            story.title,
+            story.author,
+            story.fandom,
+            ...(story.tags || [])
+          ]
+            .join(" ")
+            .toLowerCase();
+
+          return fields.includes(
+            query
+          );
+        });
+
+      $("#result-count")
+        .textContent =
+        `${results.length}
+        stor${results.length === 1
+          ? "y"
+          : "ies"} found`;
+
+      renderCards(
+        $("#results"),
+        results
+      );
+    }
+
+    $("#search-button").onclick =
+      doSearch;
+
+    $("#clear-search").onclick = () => {
+
+      input.value = "";
+
+      selected.rating = "";
+      selected.status = "";
+      selected.tag = "";
+
+      document
+        .querySelectorAll(
+          ".filter-pill"
+        )
+        .forEach(button =>
+          button.classList.remove(
+            "active"
+          )
+        );
+
+      doSearch();
+    };
+
+    input.addEventListener(
+      "input",
+      debounce(
+        doSearch,
+        200
+      )
+    );
+
+    if (searchFocus) {
+      setTimeout(
+        () => input.focus(),
+        50
+      );
+    }
+
+    doSearch();
+  }
+
+  /* =========================================================
+     STORY PAGE
+     ========================================================= */
+
+  async function renderStory(id) {
+    const story =
+      stories.find(
+        story => story.id === id
+      );
+
+    if (!story) {
+      renderHome();
+      return;
+    }
+
+    $("#app").innerHTML = `
+      <div class="story-page">
+
+        <aside class="panel">
+
+          <div
+            class="story-cover-large"
+            style="
+              background:
+              linear-gradient(
+                135deg,
+                ${escapeHtml(story.coverColor)},
+                #fff
+              )
+            "
+          >
+            ${escapeHtml(story.title)}
+          </div>
+
+          <div
+            style="
+              display:flex;
+              gap:7px;
+              margin-top:12px;
+              flex-wrap:wrap
+            "
+          >
+
+            <button
+              class="btn btn-primary"
+              id="read-first"
+            >
+              Read
+            </button>
+
+            <button
+              class="btn"
+              id="bookmark"
+            >
+              Bookmark
+            </button>
+
+          </div>
+
+          <div
+            style="margin-top:18px"
+            class="muted"
+          >
+
+            <div>
+              <strong>Rating:</strong>
+              ${escapeHtml(story.rating)}
+            </div>
+
+            <div>
+              <strong>Status:</strong>
+              ${escapeHtml(story.status)}
+            </div>
+
+            <div>
+              <strong>Chapters:</strong>
+              <span id="chapter-count">
+                Loading...
+              </span>
+            </div>
+
+            <div>
+              <strong>Words:</strong>
+              <span id="word-count">
+                Loading...
+              </span>
+            </div>
+
+          </div>
+
+          <div
+            style="margin-top:15px"
+          >
+            <strong>Tags</strong>
+
+            <div
+              class="tags"
+              id="story-tags"
+            ></div>
+          </div>
+
+        </aside>
+
+        <main>
+
+          <div class="story-header">
+
+            <h1 style="margin:0">
+              ${escapeHtml(story.title)}
+            </h1>
+
+            <div
+              class="byline"
+              style="margin-top:5px"
+            >
+              ${escapeHtml(story.author)}
+              ·
+              ${escapeHtml(story.fandom)}
+            </div>
+
+            <p>
+              ${escapeHtml(story.excerpt)}
+            </p>
+
+          </div>
+
+          <section
+            style="margin-top:20px"
+          >
+
+            <h3>Chapters</h3>
+
+            <div id="chapter-list">
+              <div class="empty">
+                Loading chapters...
+              </div>
+            </div>
+
+          </section>
+
+        </main>
+
+      </div>
+    `;
+
+    /* TAGS */
+
+    const tags =
+      $("#story-tags");
+
+    (story.tags || [])
+      .forEach(tag => {
+
+        const button =
+          document.createElement(
+            "button"
+          );
+
+        button.className = "tag";
+
+        button.textContent = tag;
+
+        button.onclick = () =>
+          renderExplore(
+            false,
+            tag
+          );
+
+        tags.appendChild(
+          button
+        );
+      });
+
+    /* CHAPTERS */
+
+    const chapters =
+      await loadChapters(
+        story.id
+      );
+
+    story.chapters = chapters;
+
+    $("#chapter-count")
+      .textContent =
+      chapters.length;
+
+    const wordCount =
+      chapters.reduce(
+        (total, chapter) =>
+          total +
+          (chapter.body || "")
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean)
+            .length,
+        0
+      );
+
+    $("#word-count")
+      .textContent =
+      formatNumber(wordCount);
+
+    const list =
+      $("#chapter-list");
+
+    list.innerHTML = "";
+
+    if (!chapters.length) {
+
+      list.innerHTML = `
+        <div class="empty">
+          This story has no chapters yet.
+        </div>
+      `;
+
+    } else {
+
+      chapters.forEach(
+        (chapter, index) => {
+
+          const row =
+            document.createElement(
+              "div"
+            );
+
+          row.className =
+            "chapter-row";
+
+          row.innerHTML = `
+            <div>
+
+              <strong>
+                ${index + 1}.
+                ${escapeHtml(
+                  chapter.title
+                )}
+              </strong>
+
+              <div class="muted">
+                ${escapeHtml(
+                  (chapter.body || "")
+                    .slice(0, 110)
+                )}
+                ${
+                  (chapter.body || "")
+                    .length > 110
+                    ? "..."
+                    : ""
+                }
+              </div>
+
+            </div>
+
+            <button
+              class="btn btn-primary"
+            >
+              Read
+            </button>
+          `;
+
+          row
+            .querySelector("button")
+            .onclick = () =>
+              renderReader(
+                story.id,
+                chapter.id
+              );
+
+          list.appendChild(row);
+        }
+      );
+    }
+
+    /* FIRST CHAPTER */
+
+    $("#read-first").onclick = () => {
+
+      if (!chapters.length) {
+        alert(
+          "This story has no chapters yet."
+        );
+
+        return;
+      }
+
+      renderReader(
+        story.id,
+        chapters[0].id
+      );
+    };
+
+    /* BOOKMARK */
+
+    $("#bookmark").onclick =
+      () =>
+        toggleBookmark(
+          story.id,
+          $("#bookmark")
+        );
+  }
+
+  /* =========================================================
+     BOOKMARKS
+     ========================================================= */
+
+  async function isBookmarked(
+    storyId
+  ) {
+    if (!supabaseUser) {
+      return false;
+    }
+
+    const { data, error } =
+      await supabase
+        .from("bookmarks")
+        .select("id")
+        .eq(
+          "user_id",
+          supabaseUser.id
+        )
+        .eq(
+          "story_id",
+          storyId
+        )
+        .maybeSingle();
+
+    if (error) {
+      console.error(
+        "Bookmark check error:",
+        error
+      );
+
+      return false;
+    }
+
+    return !!data;
+  }
+
+  async function toggleBookmark(
+    storyId,
+    button
+  ) {
+    if (!supabaseUser) {
+      alert(
+        "Please log in first."
+      );
+
+      return;
+    }
+
+    button.disabled = true;
+
+    try {
+
+      const bookmarked =
+        await isBookmarked(
+          storyId
+        );
+
+      if (bookmarked) {
+
+        const { error } =
+          await supabase
+            .from("bookmarks")
+            .delete()
+            .eq(
+              "user_id",
+              supabaseUser.id
+            )
+            .eq(
+              "story_id",
+              storyId
+            );
+
+        if (error) throw error;
+
+        button.textContent =
+          "Bookmark";
+
+      } else {
+
+        const { error } =
+          await supabase
+            .from("bookmarks")
+            .insert({
+              user_id:
+                supabaseUser.id,
+              story_id:
+                storyId
+            });
+
+        if (error) throw error;
+
+        button.textContent =
+          "Bookmarked ✓";
+      }
+
+    } catch (error) {
+
+      console.error(error);
+
+      alert(
+        error.message ||
+          "Could not update your library."
+      );
+
+    } finally {
+
+      button.disabled = false;
+    }
+  }
+
+  /* =========================================================
+     READER
+     ========================================================= */
+
+  async function renderReader(
+    storyId,
+    chapterId
+  ) {
+    const story =
+      stories.find(
+        story => story.id === storyId
+      );
+
+    if (!story) return;
+
+    const chapters =
+      await loadChapters(
+        storyId
+      );
+
+    const index =
+      chapters.findIndex(
+        chapter =>
+          chapter.id === chapterId
+      );
+
+    const chapter =
+      chapters[index];
+
+    if (!chapter) return;
+
+    $("#app").innerHTML = `
+      <div class="reader">
+
+        <div class="reader-top">
+
+          <div>
+
+            <strong>
+              ${escapeHtml(story.title)}
+            </strong>
+
+            <div class="muted">
+              ${escapeHtml(story.author)}
+              ·
+              ${escapeHtml(
+                chapter.title
+              )}
+            </div>
+
+          </div>
+
+          <div
+            style="
+              display:flex;
+              gap:6px
+            "
+          >
+
+            <button
+              class="btn"
+              id="font-minus"
+            >
+              A−
+            </button>
+
+            <button
+              class="btn"
+              id="font-plus"
+            >
+              A+
+            </button>
+
+            <button
+              class="btn"
+              id="back-story"
+            >
+              Back
+            </button>
+
+          </div>
+
+        </div>
+
+        <article class="reading-article">
+
+          <h1>
+            ${escapeHtml(
+              chapter.title
+            )}
+          </h1>
+
+          <div
+            class="reader-body"
+            id="reader-body"
+          ></div>
+
+        </article>
+
+        <div
+          style="
+            display:flex;
+            justify-content:space-between;
+            margin-top:12px
+          "
+        >
+
+          <button
+            class="btn"
+            id="prev"
+          >
+            Previous
+          </button>
+
+          <span class="muted">
+            Chapter
+            ${index + 1}
+            of
+            ${chapters.length}
+          </span>
+
+          <button
+            class="btn btn-primary"
+            id="next"
+          >
+            Next
+          </button>
+
+        </div>
+
+      </div>
+    `;
+
+    const body =
+      $("#reader-body");
+
+    body.innerHTML =
+      (chapter.body || "")
+        .split(/\n\s*\n/)
+        .map(
+          paragraph =>
+            `<p>${escapeHtml(
+              paragraph
+            ).replace(
+              /\n/g,
+              "<br>"
+            )}</p>`
+        )
+        .join("");
+
+    let fontSize = 18;
+
+    $("#font-plus").onclick = () => {
+
+      fontSize += 2;
+
+      body.style.fontSize =
+        fontSize + "px";
+    };
+
+    $("#font-minus").onclick = () => {
+
+      fontSize =
+        Math.max(
+          14,
+          fontSize - 2
+        );
+
+      body.style.fontSize =
+        fontSize + "px";
+    };
+
+    $("#back-story").onclick =
+      () => renderStory(story.id);
+
+    $("#prev").onclick = () => {
+
+      if (index > 0) {
+
+        renderReader(
+          story.id,
+          chapters[index - 1].id
+        );
+
+      } else {
+
+        alert(
+          "This is the first chapter."
+        );
+      }
+    };
+
+    $("#next").onclick = () => {
+
+      if (
+        index <
+        chapters.length - 1
+      ) {
+
+        renderReader(
+          story.id,
+          chapters[index + 1].id
+        );
+
+      } else {
+
+        alert(
+          "No more chapters."
+        );
+      }
+    };
+
+    /*
+     * Increment read count.
+     */
+
+    const currentStory =
+      stories.find(
+        item =>
+          item.id === story.id
+      );
+
+    if (currentStory) {
+
+      currentStory.stats.reads =
+        (currentStory.stats.reads || 0) + 1;
+
+      /*
+       * We use an RPC-safe update through
+       * the normal stories update.
+       *
+       * RLS must allow public story read
+       * counters according to the SQL schema.
+       */
+
+      const { error } =
+        await supabase
+          .from("stories")
+          .update({
+            reads:
+              currentStory.stats.reads
+          })
+          .eq(
+            "id",
+            story.id
+          );
+
+      if (error) {
+        console.warn(
+          "Could not update read count:",
+          error
+        );
+      }
+    }
+  }
+
+  /* =========================================================
+     DRAFT HELPERS
+     ========================================================= */
+
+  function emptyDraft() {
+    return {
+      id: null,
+      title: "",
+      fandom: "Original",
+      tags: [],
+      rating: "General",
+      status: "In Progress",
+      activeChapter: 0,
+      chapters: [
+        {
+          id: null,
+          chapterNumber: 1,
+          title: "Chapter 1",
+          body: ""
+        }
+      ]
+    };
+  }
+
+  async function loadDraft() {
+
+    if (!supabaseUser) {
+      return emptyDraft();
+    }
+
+    const { data: draft, error } =
+      await supabase
+        .from("drafts")
+        .select("*")
+        .eq(
+          "user_id",
+          supabaseUser.id
+        )
+        .order(
+          "updated_at",
+          {
+            ascending: false
+          }
+        )
+        .limit(1)
+        .maybeSingle();
+
+    if (error) {
+      console.error(
+        "Draft fetch error:",
+        error
+      );
+
+      return emptyDraft();
+    }
+
+    if (!draft) {
+      return emptyDraft();
+    }
+
+    const { data: chapters, error: chapterError } =
+      await supabase
+        .from("draft_chapters")
+        .select("*")
+        .eq(
+          "draft_id",
+          draft.id
+        )
+        .order(
+          "chapter_number",
+          {
+            ascending: true
+          }
+        );
+
+    if (chapterError) {
+      console.error(
+        "Draft chapters error:",
+        chapterError
+      );
+    }
+
+    return {
+      id: draft.id,
+
+      title:
+        draft.title || "",
+
+      fandom:
+        draft.fandom || "Original",
+
+      tags:
+        Array.isArray(draft.tags)
+          ? draft.tags
+          : [],
+
+      rating:
+        draft.rating || "General",
+
+      status:
+        draft.status || "In Progress",
+
+      activeChapter:
+        Number(
+          draft.active_chapter || 0
+        ),
+
+      chapters:
+        (chapters || []).map(
+          chapter => ({
+            id: chapter.id,
+
+            chapterNumber:
+              chapter.chapter_number,
+
+            title:
+              chapter.title ||
+              `Chapter ${
+                chapter.chapter_number
+              }`,
+
+            body:
+              chapter.body || ""
+          })
+        )
+    };
+  }
+
+  /* =========================================================
+     SAVE DRAFT
+     ========================================================= */
+
+  async function saveDraftToSupabase(
+    draft
+  ) {
+    if (!supabaseUser) {
+      throw new Error(
+        "You must be logged in to save a draft."
+      );
+    }
+
+    let draftId =
+      draft.id;
+
+    const draftPayload = {
+      user_id:
+        supabaseUser.id,
+
+      title:
+        draft.title || "",
+
+      fandom:
+        draft.fandom || "Original",
+
+      tags:
+        draft.tags || [],
+
+      rating:
+        draft.rating || "General",
+
+      status:
+        draft.status || "In Progress",
+
+      active_chapter:
+        draft.activeChapter || 0
+    };
+
+    /*
+     * CREATE
+     */
+
+    if (!draftId) {
+
+      const { data, error } =
+        await supabase
+          .from("drafts")
+          .insert(draftPayload)
+          .select()
+          .single();
+
+      if (error) throw error;
+
+      draftId =
+        data.id;
+
+      draft.id =
+        draftId;
+
+    } else {
+
+      /*
+       * UPDATE
+       */
+
+      const { error } =
+        await supabase
+          .from("drafts")
+          .update(draftPayload)
+          .eq(
+            "id",
+            draftId
+          );
+
+      if (error) throw error;
+    }
+
+    /*
+     * Replace draft chapters.
+     *
+     * This keeps the chapter manager simple
+     * and guarantees that deleted chapters
+     * really disappear from Supabase.
+     */
+
+    const { error: deleteError } =
+      await supabase
+        .from("draft_chapters")
+        .delete()
+        .eq(
+          "draft_id",
+          draftId
+        );
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    if (draft.chapters.length) {
+
+      const chapterRows =
+        draft.chapters.map(
+          (chapter, index) => ({
+            draft_id:
+              draftId,
+
+            chapter_number:
+              index + 1,
+
+            title:
+              chapter.title ||
+              `Chapter ${index + 1}`,
+
+            body:
+              chapter.body || ""
+          })
+        );
+
+      const { error: insertError } =
+        await supabase
+          .from("draft_chapters")
+          .insert(
+            chapterRows
+          );
+
+      if (insertError) {
+        throw insertError;
+      }
+    }
+
+    return draft;
+  }
+
+  /* =========================================================
+     DELETE DRAFT
+     ========================================================= */
+
+  async function deleteDraft(
+    draftId
+  ) {
+    if (!draftId) return;
+
+    const { error } =
+      await supabase
+        .from("drafts")
+        .delete()
+        .eq(
+          "id",
+          draftId
+        );
+
+    if (error) {
+      console.error(
+        "Draft delete error:",
+        error
+      );
+    }
+  }
+
+  /* =========================================================
+     WRITER
+     ========================================================= */
+
+  async function renderWrite() {
+
+    const user =
+      currentUser();
+
+    if (!user) return;
+
+    $("#app").innerHTML = `
+      <section>
+
+        <h2>Write</h2>
+
+        <div
+          class="editor-layout"
+        >
+
+          <div class="editor">
+
+            <div
+              class="muted"
+              id="draft-loading"
+              style="margin-bottom:10px"
+            >
+              Loading your draft...
+            </div>
+
+            <input
+              id="write-title"
+              placeholder="Story title"
+            >
+
+            <input
+              id="write-fandom"
+              placeholder="Fandom (or Original)"
+            >
+
+            <input
+              id="write-tags"
+              placeholder="
+                Tags — separate with commas
+              "
+            >
+
+            <div
+              class="panel"
+              style="
+                padding:11px;
+                margin-bottom:10px
+              "
+            >
+
+              <div
+                style="
+                  display:flex;
+                  justify-content:space-between;
+                  align-items:center;
+                  gap:10px;
+                  margin-bottom:8px
+                "
+              >
+
+                <strong>
+                  Chapters
+                </strong>
+
+                <span
+                  class="muted"
+                  id="chapter-count"
+                >
+                  1 chapter
+                </span>
+
+              </div>
+
+              <div
+                class="chapter-manager"
+              >
+
+                <div
+                  class="chapter-tabs"
+                  id="chapter-tabs"
+                ></div>
+
+                <div
+                  class="chapter-tools"
+                >
+
+                  <button
+                    class="btn btn-primary"
+                    id="add-chapter"
+                    type="button"
+                  >
+                    + Add chapter
+                  </button>
+
+                  <button
+                    class="btn btn-danger"
+                    id="delete-chapter"
+                    type="button"
+                  >
+                    Delete
+                  </button>
+
+                </div>
+
+              </div>
+
+            </div>
+
+            <input
+              id="chapter-title"
+              class="chapter-title-input"
+              placeholder="Chapter title"
+            >
+
+            <div class="toolbar">
+
+              <button
+                class="btn"
+                id="bold"
+                type="button"
+              >
+                Bold
+              </button>
+
+              <button
+                class="btn"
+                id="italic"
+                type="button"
+              >
+                Italic
+              </button>
+
+              <button
+                class="btn"
+                id="save-draft"
+                type="button"
+              >
+                Save draft
+              </button>
+
+              <button
+                class="btn btn-yellow"
+                id="preview"
+                type="button"
+              >
+                Preview
+              </button>
+
+              <button
+                class="btn btn-primary"
+                id="publish"
+                type="button"
+              >
+                Publish story
+              </button>
+
+            </div>
+
+            <div
+              id="editor-body"
+              class="editor-body"
+              contenteditable="true"
+            ></div>
+
+          </div>
+
+          <aside>
+
+            <div class="panel">
+
+              <strong>
+                Story info
+              </strong>
+
+              <div
+                class="field"
+                style="margin-top:12px"
+              >
+
+                <label>
+                  Rating
+                </label>
+
+                <select
+                  id="write-rating"
+                >
+                  <option>
+                    General
+                  </option>
+
+                  <option>
+                    Teen And Up Audiences
+                  </option>
+
+                  <option>
+                    Mature
+                  </option>
+
+                  <option>
+                    Explicit
+                  </option>
+                </select>
+
+              </div>
+
+              <div class="field">
+
+                <label>
+                  Status
+                </label>
+
+                <select
+                  id="write-status"
+                >
+                  <option>
+                    In Progress
+                  </option>
+
+                  <option>
+                    Complete
+                  </option>
+                </select>
+
+              </div>
+
+              <div class="muted">
+
+                Every chapter is saved
+                separately in your draft.
+                You can add as many chapters
+                as you want before publishing.
+
+              </div>
+
+            </div>
+
+            <div
+              class="panel"
+              style="margin-top:12px"
+            >
+
+              <strong>
+                Your account
+              </strong>
+
+              <p
+                style="margin-bottom:0"
+              >
+                ${escapeHtml(
+                  user.username
+                )}
+              </p>
+
+              <div class="muted">
+                ${escapeHtml(
+                  user.email
+                )}
+              </div>
+
+            </div>
+
+          </aside>
+
+        </div>
+
+      </section>
+    `;
+
+    let draft =
+      await loadDraft();
+
+    if (!draft.chapters.length) {
+
+      draft.chapters = [
+        {
+          id: null,
+          chapterNumber: 1,
+          title: "Chapter 1",
+          body: ""
+        }
+      ];
+    }
+
+    let activeIndex =
+      Math.max(
+        0,
+        Math.min(
+          draft.activeChapter || 0,
+          draft.chapters.length - 1
+        )
+      );
+
+    $("#draft-loading")
+      .remove();
+
+    $("#write-title").value =
+      draft.title;
+
+    $("#write-fandom").value =
+      draft.fandom;
+
+    $("#write-tags").value =
+      draft.tags.join(", ");
+
+    $("#write-rating").value =
+      draft.rating;
+
+    $("#write-status").value =
+      draft.status;
+
+    function activeChapter() {
+      return draft.chapters[
+        activeIndex
+      ];
+    }
+
+    function saveCurrentFields() {
+
+      const chapter =
+        activeChapter();
+
+      chapter.title =
+        $("#chapter-title")
+          .value
+          .trim() ||
+        `Chapter ${
+          activeIndex + 1
+        }`;
+
+      chapter.body =
+        $("#editor-body")
+          .innerText;
+
+      draft.title =
+        $("#write-title")
+          .value
+          .trim();
+
+      draft.fandom =
+        $("#write-fandom")
+          .value
+          .trim() ||
+        "Original";
+
+      draft.tags =
+        $("#write-tags")
+          .value
+          .split(",")
+          .map(tag =>
+            tag.trim()
+          )
+          .filter(Boolean);
+
+      draft.rating =
+        $("#write-rating")
+          .value;
+
+      draft.status =
+        $("#write-status")
+          .value;
+
+      draft.activeChapter =
+        activeIndex;
+    }
+
+    async function saveDraft() {
+
+      saveCurrentFields();
+
+      try {
+
+        await saveDraftToSupabase(
+          draft
+        );
+
+        return true;
+
+      } catch (error) {
+
+        console.error(error);
+
+        alert(
+          error.message ||
+            "Could not save your draft."
+        );
+
+        return false;
+      }
+    }
+
+    function renderChapterTabs() {
+
+      const wrapper =
+        $("#chapter-tabs");
+
+      if (!wrapper) return;
+
+      wrapper.innerHTML = "";
+
+      draft.chapters.forEach(
+        (chapter, index) => {
+
+          const button =
+            document.createElement(
+              "button"
+            );
+
+          button.type = "button";
+
+          button.className =
+            "chapter-tab" +
+            (
+              index === activeIndex
+                ? " active"
+                : ""
+            );
+
+          button.textContent =
+            `${index + 1}. ${
+              chapter.title ||
+              `Chapter ${index + 1}`
+            }`;
+
+          button.onclick = () => {
+
+            saveCurrentFields();
+
+            activeIndex =
+              index;
+
+            renderEditorState();
+          };
+
+          wrapper.appendChild(
+            button
+          );
+        }
+      );
+    }
+
+    function renderEditorState() {
+
+      const chapter =
+        activeChapter();
+
+      $("#chapter-title")
+        .value =
+        chapter.title ||
+        `Chapter ${
+          activeIndex + 1
+        }`;
+
+      $("#editor-body")
+        .innerText =
+        chapter.body || "";
+
+      renderChapterTabs();
+
+      $("#chapter-count")
+        .textContent =
+        `${draft.chapters.length}
+        chapter${
+          draft.chapters.length === 1
+            ? ""
+            : "s"
+        }`;
+    }
+
+    /* ADD CHAPTER */
+
+    $("#add-chapter").onclick =
+      async () => {
+
+        saveCurrentFields();
+
+        draft.chapters.push({
+          id: null,
+          chapterNumber:
+            draft.chapters.length + 1,
+          title:
+            `Chapter ${
+              draft.chapters.length + 1
+            }`,
+          body: ""
+        });
+
+        activeIndex =
+          draft.chapters.length - 1;
+
+        draft.activeChapter =
+          activeIndex;
+
+        renderEditorState();
+
+        $("#chapter-title")
+          .focus();
+
+        /*
+         * Save immediately so a newly
+         * created chapter isn't lost.
+         */
+
+        await saveDraft();
+      };
+
+    /* DELETE CHAPTER */
+
+    $("#delete-chapter").onclick =
+      async () => {
+
+        if (
+          draft.chapters.length <= 1
+        ) {
+
+          alert(
+            "A story needs at least one chapter."
+          );
+
+          return;
+        }
+
+        const chapter =
+          activeChapter();
+
+        if (
+          !confirm(
+            `Delete “${
+              chapter.title ||
+              `Chapter ${
+                activeIndex + 1
+              }`
+            }”? This cannot be undone.`
+          )
+        ) {
+          return;
+        }
+
+        draft.chapters.splice(
+          activeIndex,
+          1
+        );
+
+        activeIndex =
+          Math.max(
+            0,
+            activeIndex - 1
+          );
+
+        draft.activeChapter =
+          activeIndex;
+
+        renderEditorState();
+
+        await saveDraft();
+      };
+
+    /* CHAPTER TITLE */
+
+    $("#chapter-title")
+      .addEventListener(
+        "input",
+        () => {
+
+          activeChapter().title =
+            $("#chapter-title")
+              .value;
+
+          renderChapterTabs();
+        }
+      );
+
+    /* SAVE */
+
+    $("#save-draft").onclick =
+      async () => {
+
+        const success =
+          await saveDraft();
+
+        if (success) {
+
+          alert(
+            `Draft saved — ${
+              draft.chapters.length
+            } chapter${
+              draft.chapters.length === 1
+                ? ""
+                : "s"
+            }.`
+          );
+        }
+      };
+
+    /* PREVIEW */
+
+    $("#preview").onclick =
+      () => {
+
+        saveCurrentFields();
+
+        const previewText =
+          draft.chapters
+            .map(
+              (chapter, index) =>
+                `${index + 1}. ${
+                  chapter.title
+                }\n\n${
+                  chapter.body
+                }`
+            )
+            .join(
+              "\n\n--------------------\n\n"
+            );
+
+        alert(
+          "Preview:\n\n" +
+          previewText.slice(
+            0,
+            5000
+          )
+        );
+      };
+
+    /* FORMATTING */
+
+    $("#bold").onclick =
+      () =>
+        document.execCommand(
+          "bold"
+        );
+
+    $("#italic").onclick =
+      () =>
+        document.execCommand(
+          "italic"
+        );
+
+    /* AUTOSAVE */
+
+    const autosave =
+      setInterval(
+        () => {
+          saveDraft();
+        },
+        6000
+      );
+
+    /* =====================================================
+       PUBLISH
+       ===================================================== */
+
+    $("#publish").onclick =
+      async () => {
+
+        saveCurrentFields();
+
+        const title =
+          draft.title.trim();
+
+        if (!title) {
+
+          alert(
+            "Please give your story a title."
+          );
+
+          return;
+        }
+
+        const chapters =
+          draft.chapters.map(
+            (chapter, index) => ({
+              title:
+                (
+                  chapter.title ||
+                  `Chapter ${
+                    index + 1
+                  }`
+                ).trim() ||
+                `Chapter ${
+                  index + 1
+                }`,
+
+              body:
+                chapter.body || ""
+            })
+          );
+
+        const emptyIndex =
+          chapters.findIndex(
+            chapter =>
+              !chapter.body.trim()
+          );
+
+        if (emptyIndex !== -1) {
+
+          activeIndex =
+            emptyIndex;
+
+          renderEditorState();
+
+          alert(
+            `Chapter ${
+              emptyIndex + 1
+            } is empty. Write something in it or delete it before publishing.`
+          );
+
+          return;
+        }
+
+        const firstBody =
+          chapters[0].body.trim();
+
+        /*
+         * Create story.
+         */
+
+        const { data: storyData, error: storyError } =
+          await supabase
+            .from("stories")
+            .insert({
+              author_id:
+                supabaseUser.id,
+
+              title,
+
+              fandom:
+                draft.fandom.trim() ||
+                "Original",
+
+              excerpt:
+                firstBody.slice(
+                  0,
+                  160
+                ),
+
+              cover_color:
+                coverColor(),
+
+              tags:
+                draft.tags,
+
+              rating:
+                draft.rating,
+
+              status:
+                draft.status,
+
+              reads: 0,
+
+              likes_count: 0,
+
+              bookmarks_count: 0
+            })
+            .select()
+            .single();
+
+        if (storyError) {
+
+          console.error(
+            storyError
+          );
+
+          alert(
+            storyError.message ||
+              "Could not publish your story."
+          );
+
+          return;
+        }
+
+        /*
+         * Create all chapters.
+         */
+
+        const chapterRows =
+          chapters.map(
+            (chapter, index) => ({
+              story_id:
+                storyData.id,
+
+              chapter_number:
+                index + 1,
+
+              title:
+                chapter.title,
+
+              body:
+                chapter.body
+            })
+          );
+
+        const {
+          error: chapterError
+        } =
+          await supabase
+            .from("chapters")
+            .insert(
+              chapterRows
+            );
+
+        if (chapterError) {
+
+          console.error(
+            chapterError
+          );
+
+          /*
+           * Roll back story if chapter
+           * insertion fails.
+           */
+
+          await supabase
+            .from("stories")
+            .delete()
+            .eq(
+              "id",
+              storyData.id
+            );
+
+          alert(
+            chapterError.message ||
+              "Could not save the chapters."
+          );
+
+          return;
+        }
+
+        /*
+         * Delete the draft after
+         * successful publishing.
+         */
+
+        if (draft.id) {
+          await deleteDraft(
+            draft.id
+          );
+        }
+
+        clearInterval(
+          autosave
+        );
+
+        await loadStories();
+
+        alert(
+          `Your story has been published with ${
+            chapters.length
+          } chapter${
+            chapters.length === 1
+              ? ""
+              : "s"
+          }!`
+        );
+
+        renderStory(
+          storyData.id
+        );
+      };
+
+    renderEditorState();
+  }
+
+  /* =========================================================
+     LIBRARY
+     ========================================================= */
+
+  async function renderLibrary() {
+
+    const user =
+      currentUser();
+
+    if (!user) return;
+
+    $("#app").innerHTML = `
+      <section>
+
+        <h2>
+          Your Library
+        </h2>
+
+        <p class="muted">
+          Stories you've bookmarked.
+        </p>
+
+        <div
+          class="grid"
+          id="library-grid"
+        >
+          <div class="empty">
+            Loading your library...
+          </div>
+        </div>
+
+      </section>
+    `;
+
+    const { data, error } =
+      await supabase
+        .from("bookmarks")
+        .select("story_id")
+        .eq(
+          "user_id",
+          supabaseUser.id
+        );
+
+    if (error) {
+
+      console.error(
+        "Library error:",
+        error
+      );
+
+      $("#library-grid").innerHTML = `
+        <div class="empty">
+          Could not load your library.
+        </div>
+      `;
+
+      return;
+    }
+
+    const ids =
+      (data || [])
+        .map(
+          bookmark =>
+            bookmark.story_id
+        );
+
+    const saved =
+      stories.filter(
+        story =>
+          ids.includes(
+            story.id
+          )
+      );
+
+    renderCards(
+      $("#library-grid"),
+      saved
+    );
+  }
+
+  /* =========================================================
+     PROFILE
+     ========================================================= */
+
+  async function renderProfile() {
+
+    const user =
+      currentUser();
+
+    if (!user) return;
+
+    const ownStories =
+      stories.filter(
+        story =>
+          story.authorId ===
+          user.id
+      );
+
+    $("#app").innerHTML = `
+      <section>
+
+        <div
+          class="profile-head panel"
+        >
+
+          <div
+            class="avatar-big"
+            id="profile-avatar"
+          >
+            ${
+              (
+                user.username[0] ||
+                "?"
+              ).toUpperCase()
+            }
+          </div>
+
+          <div
+            style="flex:1"
+          >
+
+            <h2 style="margin:0">
+              ${escapeHtml(
+                user.username
+              )}
+            </h2>
+
+            <div class="muted">
+              ${escapeHtml(
+                user.email
+              )}
+            </div>
+
+            <p>
+              ${escapeHtml(
+                user.bio ||
+                "No bio yet."
+              )}
+            </p>
+
+          </div>
+
+        </div>
+
+        <div
+          class="panel"
+          style="margin-top:15px"
+        >
+
+          <h3>
+            Edit profile
+          </h3>
+
+          <div class="field">
+
+            <label>
+              Username
+            </label>
+
+            <input
+              id="edit-username"
+              value="${escapeHtml(
+                user.username
+              )}"
+              maxlength="30"
+            >
+
+          </div>
+
+          <div class="field">
+
+            <label>
+              Bio
+            </label>
+
+            <textarea
+              id="edit-bio"
+              maxlength="160"
+            >${escapeHtml(
+              user.bio || ""
+            )}</textarea>
+
+          </div>
+
+          <button
+            class="btn btn-primary"
+            id="save-profile"
+          >
+            Save changes
+          </button>
+
+          <button
+            class="btn btn-danger"
+            id="logout"
+            style="margin-left:6px"
+          >
+            Log out
+          </button>
+
+        </div>
+
+        <section
+          class="section"
+        >
+
+          <h2>
+            Your published stories
+          </h2>
+
+          <div
+            class="grid"
+            id="my-stories"
+          ></div>
+
+        </section>
+
+      </section>
+    `;
+
+    $("#save-profile").onclick =
+      async () => {
+
+        const newName =
+          $("#edit-username")
+            .value
+            .trim();
+
+        const newBio =
+          $("#edit-bio")
+            .value
+            .trim();
+
+        if (!newName) {
+
+          alert(
+            "Username cannot be empty."
+          );
+
+          return;
+        }
+
+        /*
+         * Check username uniqueness.
+         */
+
+        const { data: existing } =
+          await supabase
+            .from("profiles")
+            .select("id")
+            .eq(
+              "username",
+              newName
+            )
+            .neq(
+              "id",
+              user.id
+            )
+            .maybeSingle();
+
+        if (existing) {
+
+          alert(
+            "That username is already taken."
+          );
+
+          return;
+        }
+
+        const { data, error } =
+          await supabase
+            .from("profiles")
+            .update({
+              username:
+                newName,
+
+              bio:
+                newBio,
+
+              avatar_color:
+                user.avatarColor ||
+                "#f4cf6b"
+            })
+            .eq(
+              "id",
+              user.id
+            )
+            .select()
+            .single();
+
+        if (error) {
+
+          console.error(
+            error
+          );
+
+          alert(
+            error.message ||
+              "Could not update your profile."
+          );
+
+          return;
+        }
+
+        /*
+         * Also keep auth metadata synchronized.
+         */
+
+        await supabase.auth.updateUser({
+          data: {
+            username:
+              newName,
+
+            bio:
+              newBio,
+
+            avatarColor:
+              data.avatar_color ||
+              "#f4cf6b"
+          }
+        });
+
+        await buildProfile(
+          supabaseUser
+        );
+
+        updateHeader();
+
+        /*
+         * Reload stories so the new author
+         * name appears everywhere.
+         */
+
+        await loadStories();
+
+        alert(
+          "Profile updated!"
+        );
+
+        renderProfile();
+      };
+
+    $("#logout").onclick =
+      logout;
+
+    renderCards(
+      $("#my-stories"),
+      ownStories
+    );
+  }
+
+  /* =========================================================
+     AUTH INITIALIZATION
+     ========================================================= */
+
+  async function startAuth() {
+
+    try {
+
+      const {
+        data,
+        error
+      } =
+        await supabase.auth.getSession();
+
+      if (error) {
+        throw error;
+      }
+
+      if (
+        data.session &&
+        data.session.user
+      ) {
+
+        supabaseUser =
+          data.session.user;
+
+        await buildProfile(
+          supabaseUser
+        );
+
+        await enterSite();
+
+      } else {
+
+        authScreen.style.display =
+          "flex";
+
+        site.style.display =
+          "none";
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Supabase session error:",
+        error
+      );
+
+      setAuthMessage(
+        "Could not connect to BookWorm's account system. Check your Supabase settings.",
+        true
+      );
+
+      authScreen.style.display =
+        "flex";
+
+      site.style.display =
+        "none";
+    }
+
+    /*
+     * Listen for future authentication changes.
+     */
+
+    supabase.auth.onAuthStateChange(
+      async (
+        event,
+        session
+      ) => {
+
+        if (
+          session &&
+          session.user
+        ) {
+
+          supabaseUser =
+            session.user;
+
+          /*
+           * Small timeout prevents Supabase's
+           * auth event from racing with UI updates.
+           */
+
+          setTimeout(
+            async () => {
+
+              await buildProfile(
+                session.user
+              );
+
+              await enterSite();
+
+            },
+            0
+          );
+
+        } else if (
+          event ===
+          "SIGNED_OUT"
+        ) {
+
+          supabaseUser =
+            null;
+
+          profileCache =
+            null;
+
+          stories = [];
+
+          site.style.display =
+            "none";
+
+          authScreen.style.display =
+            "flex";
+        }
+
+      }
+    );
+  }
+
+  /* =========================================================
+     START BOOKWORM
+     ========================================================= */
+
+  setAuthMode("login");
+
+  startAuth();
+
+})();
+</script>
 </body>
 </html>
